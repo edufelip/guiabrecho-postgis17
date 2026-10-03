@@ -14,7 +14,7 @@ jobs:
       packages: write
     env:
       GH_TOKEN: ${{ github.token }}
-      DOCKER_CONFIG: ${{ runner.temp }}/pg17-docker-auth
+      DOCKER_CONFIG: /tmp/pg17-docker-auth
       TARGET: ghcr.io/edufelip/guiabrecho-postgis17:pg17.11-postgis3.6.4-pilot-20261003
     steps:
       - name: Refuse another repository or actor

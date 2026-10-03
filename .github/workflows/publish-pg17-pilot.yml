@@ -1,0 +1,72 @@
+name: Publish qualified PG17 pilot image
+on:
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: qualified-pg17-pilot-publication
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DOCKER_CONFIG: ${{ runner.temp }}/pg17-docker-auth
+      TARGET: ghcr.io/edufelip/guiabrecho-postgis17:pg17.11-postgis3.6.4-pilot-20261003
+    steps:
+      - name: Refuse another repository or actor
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = edufelip/guiabrecho-postgis17
+          test "$GITHUB_ACTOR" = edufelip
+      - name: Download only the qualified public software archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download pg17-publication-input-20261003 --repo "$GITHUB_REPOSITORY" --pattern qualified-pg17-public-software.tar.gz
+          printf '%s  %s\n' d6d1fc27e028ff97948ff47ebd79f5b978a34d92fef20ed32735187bc6897621 qualified-pg17-public-software.tar.gz | sha256sum --check --strict
+          test "$(stat -c%s qualified-pg17-public-software.tar.gz)" = 190244842
+      - name: Load and bind the exact qualified filesystem
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker image load --input qualified-pg17-public-software.tar.gz
+          source_ref=sha256:7133289958adf16e71ebef053e4921b9b2f2012ae5ab31bc46f12929ba1958cd
+          if docker image inspect sha256:f8b30b7c3516023f4fbf9f786ba663e2fe7acf9adc757b7f89ac0e500eb58f4d >/dev/null 2>&1; then
+            source_ref=sha256:f8b30b7c3516023f4fbf9f786ba663e2fe7acf9adc757b7f89ac0e500eb58f4d
+          fi
+          docker image inspect "$source_ref" > public-image-inspect.json
+          python3 - <<'CHECK'
+          import json
+          x=json.load(open('public-image-inspect.json'))[0]
+          assert x['Architecture']=='amd64' and x['Os']=='linux'
+          assert x['Id'] in ['sha256:f8b30b7c3516023f4fbf9f786ba663e2fe7acf9adc757b7f89ac0e500eb58f4d','sha256:7133289958adf16e71ebef053e4921b9b2f2012ae5ab31bc46f12929ba1958cd']
+          assert x['RootFS']['Layers']==["sha256:34884abbe92863fce933ed7c39c0e045631af0ed86d5cc0dfbdf9fdca426ce3c", "sha256:b2adc719066f2e72bc57ac86d624af3fac5dd2e605eb0c973e82a7de7a768226", "sha256:a1a9bacee3af3a2374cef8bdb3ab30509ed3ee6ea066b28cb99c8c3d5bdc4b58", "sha256:850d61e3d4a2ebb0f51637f13f51934a6a22be1b29d4795c27d73e50be07a54e", "sha256:67f703ac42fb80d5dbc632d6da23922e4aadf47aab745a14af3c66c5192e3e99", "sha256:28e87f320c566cac1f7dd501ae171a5193df42572321822ea3fce9af732d31e0", "sha256:3760a7bba846724694304711cb42c53c6e44573e32ea580a8085cc6f45cfc2a0", "sha256:65ba394136a046fdf332b728990d70ae7e01fe82eb8f3bd7a21dec4a786e402d", "sha256:a2267e22cca23dcf497f8e341968a4ff363f7c826e165d878cccc6daa8f83242", "sha256:3bdce6f822805ba4643019b2dfe2e1a0a38159d4288c81598c46d651aba47212", "sha256:76a02741f8f64ac04b9db32962c94347852bfa9803cca07f968bf54a167eb9fa", "sha256:c181a8af8457167067a42eea6a1749528c907324fecdc704b4d76069e00d3c34", "sha256:66756865b67c458f8135b3738320a9b25150ea7fb330d2436bb9f6d264e7e718", "sha256:4f7166a932ce00682d60be08c75ebf100f4afca114deccb7fdf46c0958e35fd0", "sha256:c2743c26460dc53359e14a14cccb09b1a4fbf982d8e7622fd42f964c4f99da00", "sha256:5451927e474ff0c04c8663d35d04fc3ea67e9c1d5ec34088d9f1df390981c906"]
+          assert x['Config']['Entrypoint']==['docker-entrypoint.sh'] and x['Config']['Cmd']==['postgres']
+          CHECK
+          docker run --rm --pull never --platform linux/amd64 --network none --cpus 1 --memory 128m --memory-swap 128m --read-only --entrypoint sh "$source_ref" -ec 'test "$(stat -c "%u:%g:%a" /usr/local/bin/gosu)" = 0:0:755; test "$(gosu postgres id -u)" = 70; printf "%s  %s\n" 9444873197bea4d09245573c1d228ddb78c5ce76f85ab298cd07c591c717c374 /usr/local/lib/postgresql/postgis-3.so 9ebd2c978d2a66aeee22a52a0679f0351ad72eb0cb7b61c4ee3e21a0ccc52f48 /usr/local/bin/gosu | sha256sum --check --strict; postgres --version'
+          printf 'SOURCE_REF=%s\n' "$source_ref" >> "$GITHUB_ENV"
+      - name: Publish exactly one versioned database image
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username edufelip --password-stdin
+          if docker manifest inspect "$TARGET" >/dev/null 2>&1; then
+            echo "Refusing to overwrite an existing versioned tag" >&2
+            exit 1
+          fi
+          docker tag "$SOURCE_REF" "$TARGET"
+          docker push "$TARGET"
+          docker manifest inspect "$TARGET" > published-manifest.json
+          printf 'Published tag: %s\n' "$TARGET" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Record the push manifest digest, then owner makes only this package Public; anonymous digest verification and Railway acceptance remain required.\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Delete runner-only registry login
+        if: always()
+        shell: bash
+        run: |
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          rm -rf -- "$DOCKER_CONFIG"
